@@ -183,14 +183,14 @@ async function start() {
     $("msg").textContent = "კამერა ვერ გაიხსნა: " + e.message;
     return;
   }
-  $("video").srcObject = stream;
-  await $("video").play();
   scanning = true;
   setupCamControls(stream.getVideoTracks()[0]);
   $("toggle").textContent = "გაჩერება";
   $("toggle").classList.add("stop");
 
   if ("BarcodeDetector" in window) {
+    $("video").srcObject = stream;
+    await $("video").play();
     const det = new BarcodeDetector({
       formats: ["code_128", "ean_13", "ean_8", "upc_a", "upc_e", "code_39", "itf", "qr_code"]
     });
@@ -207,8 +207,12 @@ async function start() {
     hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
       F.CODE_128, F.CODE_39, F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.ITF, F.QR_CODE
     ]);
-    reader = new ZXing.BrowserMultiFormatReader(hints, 150);
-    reader.decodeFromVideoElement($("video"), r => { if (r) record(r.getText()); });
+    reader = new ZXing.BrowserMultiFormatReader(hints, 120);
+    // decodeFromStream თვითონ აერთებს ნაკადს ვიდეოსთან და თვითონ უშვებს
+    reader.decodeFromStream(stream, $("video"), (r, err) => {
+      if (r) record(r.getText());
+      else if (err && !(err instanceof ZXing.NotFoundException)) console.warn(err);
+    }).catch(e => { $("msg").textContent = "სკანერი ვერ გაეშვა: " + e.message; });
   } else {
     $("msg").textContent = "ამ ბრაუზერში სკანერი არ მუშაობს — გახსენი Safari-ში ან Chrome-ში";
   }
