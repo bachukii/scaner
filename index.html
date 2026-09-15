@@ -116,7 +116,7 @@ const qs = new URLSearchParams(location.search);
 API = qs.get("api") || API;
 const SESSION = qs.get("s") || "";
 
-let scanning = false, stream = null, reader = null, count = 0;
+let scanning = false, paused = false, stream = null, reader = null, count = 0;
 let lastCode = "", lastAt = 0;
 const queue = [];   // გაუგზავნელი კოდები (ინტერნეტის გათიშვისას)
 
@@ -139,6 +139,7 @@ async function flush() {
   try {
     await fetch(API, {
       method: "POST",
+      mode: "no-cors",                       // Apps Script პასუხს CORS-ით არ აბრუნებს
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify({ session: SESSION, codes: batch })
     });
@@ -174,9 +175,8 @@ function record(code) {
 
   navigator.vibrate?.(60);
   $("stage").classList.add("hit");
-  setTimeout(() => $("stage").classList.remove("hit"), 250);
-
   flush();
+  freeze();
 }
 
 /* ─── კამერა ─────────────────────────────────────────────────── */
@@ -212,15 +212,15 @@ async function start() {
 
   /* ── ZBar: კადრის ცენტრალური ზოლი, სრული გარჩევადობით ── */
   function runZbar() {
-    log("ძრავი: ZBar (WASM)");
+
     const v = $("video");
     const cv = document.createElement("canvas");
     const cx = cv.getContext("2d", { willReadFrequently: true });
-    let tries = 0, busy = false;
+    let busy = false;
 
     const tick = async () => {
       if (!scanning) return;
-      if (!busy && v.videoWidth) {
+      if (!busy && !paused && v.videoWidth) {
         busy = true;
         try {
           const w = v.videoWidth, h = v.videoHeight;
@@ -232,10 +232,7 @@ async function start() {
           if (syms.length) {
             const sym = syms[0];
             const text = sym.decode ? sym.decode() : new TextDecoder().decode(new Uint8Array(sym.data));
-            log("წაკითხულია: " + sym.typeName);
             record(text);
-          } else if (++tries % 25 === 0) {
-            log(`ვცდილობ... ${tries} (კადრი ${w}×${bandH})`);
           }
         } catch (e) {
           log("ZBar შეცდომა: " + e.message);
@@ -261,6 +258,22 @@ async function start() {
   }
 }
 
+function freeze() {
+  paused = true;
+  $("video").pause();
+  $("toggle").textContent = "შემდეგი კოდი";
+  $("toggle").classList.remove("stop");
+}
+
+function resume() {
+  paused = false;
+  lastCode = "";
+  $("stage").classList.remove("hit");
+  $("video").play();
+  $("toggle").textContent = "გაჩერება";
+  $("toggle").classList.add("stop");
+}
+
 function setupCamControls(track) {
   const caps = track.getCapabilities?.() || {};
   if (caps.zoom) {
@@ -284,6 +297,7 @@ function setupCamControls(track) {
 
 function stop() {
   scanning = false;
+  paused = false;
   reader?.reset(); reader = null;
   stream?.getTracks().forEach(t => t.stop()); stream = null;
   $("zoom").hidden = true; $("torch").hidden = true;
@@ -291,7 +305,11 @@ function stop() {
   $("toggle").classList.remove("stop");
 }
 
-$("toggle").onclick = () => (scanning ? stop() : start());
+$("toggle").onclick = () => {
+  if (!scanning) start();
+  else if (paused) resume();
+  else stop();
+};
 document.addEventListener("visibilitychange", () => { if (document.hidden && scanning) stop(); });
 </script>
 </body>
