@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Barcode to PC</title>
+<style>
+  :root {
+    --ink: #0f1115;
+    --panel: #171a21;
+    --line: #2a2f3a;
+    --dim: #8b93a5;
+    --live: #38d17a;
+    --idle: #6b7280;
+    --hit: #ffd24a;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--ink);
+    color: #eef1f6;
+    font: 400 16px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif;
+    display: flex; flex-direction: column;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  header {
+    display: flex; align-items: center; gap: 10px;
+    padding: calc(env(safe-area-inset-top) + 12px) 16px 12px;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--idle); flex: none; }
+  .dot.on { background: var(--live); }
+  header span { color: var(--dim); font-size: 14px; }
+  header b { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--dim); font-weight: 500; }
+
+  .stage {
+    position: relative; margin: 0 12px; border-radius: 14px; overflow: hidden;
+    background: #000; aspect-ratio: 4 / 3;
+  }
+  video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .frame {
+    position: absolute; inset: 18% 10%;
+    border: 2px solid rgba(255,255,255,.55); border-radius: 8px;
+    box-shadow: 0 0 0 100vmax rgba(0,0,0,.35);
+  }
+  .stage.hit .frame { border-color: var(--hit); }
+  .hint {
+    position: absolute; left: 0; right: 0; bottom: 10px; text-align: center;
+    font-size: 13px; color: rgba(255,255,255,.8);
+  }
+
+  .last {
+    margin: 14px 12px 0; padding: 14px 16px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    font: 600 26px/1.2 ui-monospace, "SF Mono", Menlo, monospace;
+    letter-spacing: .02em; word-break: break-all; min-height: 58px;
+  }
+  .last:empty::before { content: "კოდი ჯერ არ დასკანერებულა"; color: var(--dim); font: 400 15px/1.4 inherit; }
+
+  ul { list-style: none; margin: 10px 12px 0; padding: 0; flex: 1; overflow-y: auto; }
+  li {
+    display: flex; gap: 12px; padding: 9px 4px; border-bottom: 1px solid var(--line);
+    font: 400 15px/1.3 ui-monospace, Menlo, monospace; color: #c8cedb;
+  }
+  li time { color: var(--dim); font-size: 13px; margin-left: auto; }
+
+  footer { display: flex; gap: 10px; padding: 12px; align-items: center; }
+  button {
+    flex: 1; padding: 16px; border: 0; border-radius: 12px;
+    background: #b3261e; color: #fff; font: 600 17px/1 inherit;
+  }
+  button.stop { background: var(--panel); border: 1px solid var(--line); color: #eef1f6; }
+  select {
+    padding: 16px 12px; border-radius: 12px; border: 1px solid var(--line);
+    background: var(--panel); color: #eef1f6; font: 400 15px/1 inherit;
+  }
+  .err { margin: 10px 12px 0; color: #ff8f8f; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<header>
+  <i class="dot" id="dot"></i>
+  <span id="status">კავშირი...</span>
+  <b id="count">0</b>
+</header>
+
+<div class="stage" id="stage">
+  <video id="video" playsinline muted autoplay></video>
+  <div class="frame"></div>
+  <div class="hint">კოდი ჩაუშვი ჩარჩოში</div>
+</div>
+
+<div class="last" id="last"></div>
+<div class="err" id="err"></div>
+<ul id="log"></ul>
+
+<footer>
+  <select id="suffix">
+    <option value="enter">Enter</option>
+    <option value="tab">Tab</option>
+    <option value="none">დამატების გარეშე</option>
+  </select>
+  <button id="toggle">სკანირების დაწყება</button>
+</footer>
+
+<script src="/static/zxing.js"></script>
+<script>
+const pin = new URLSearchParams(location.search).get("pin") || "";
+const $ = id => document.getElementById(id);
+let ws, scanning = false, stream = null, reader = null, count = 0;
+let lastCode = "", lastAt = 0;
+
+/* ---------- კავშირი PC-სთან ---------- */
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = () => ws.send(JSON.stringify({ type: "hello", pin }));
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.type === "hello") {
+      $("dot").classList.toggle("on", m.ok);
+      $("status").textContent = m.ok ? "კომპიუტერი დაკავშირებულია" : "PIN არ ემთხვევა";
+    }
+  };
+  ws.onclose = () => {
+    $("dot").classList.remove("on");
+    $("status").textContent = "კავშირი გაწყდა — ვცდილობ...";
+    setTimeout(connect, 2000);
+  };
+}
+connect();
+
+/* ---------- კოდის გაგზავნა ---------- */
+function send(code) {
+  const now = Date.now();
+  if (code === lastCode && now - lastAt < 1500) return;
+  lastCode = code; lastAt = now;
+
+  if (!ws || ws.readyState !== 1) { $("err").textContent = "კომპიუტერი მიუწვდომელია"; return; }
+  ws.send(JSON.stringify({ type: "scan", code, suffix: $("suffix").value }));
+
+  $("last").textContent = code;
+  $("count").textContent = ++count;
+  const li = document.createElement("li");
+  li.innerHTML = `<span></span><time></time>`;
+  li.firstChild.textContent = code;
+  li.lastChild.textContent = new Date().toLocaleTimeString("ka-GE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  $("log").prepend(li);
+
+  navigator.vibrate?.(60);
+  $("stage").classList.add("hit");
+  setTimeout(() => $("stage").classList.remove("hit"), 250);
+}
+
+/* ---------- კამერა ---------- */
+async function start() {
+  $("err").textContent = "";
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 } }
+    });
+  } catch (e) {
+    $("err").textContent = "კამერა ვერ გაიხსნა: " + e.message;
+    return;
+  }
+  $("video").srcObject = stream;
+  await $("video").play();
+  scanning = true;
+  $("toggle").textContent = "გაჩერება";
+  $("toggle").classList.add("stop");
+
+  if ("BarcodeDetector" in window) {
+    const det = new BarcodeDetector({
+      formats: ["code_128", "ean_13", "ean_8", "upc_a", "upc_e", "code_39", "itf", "qr_code"]
+    });
+    const loop = async () => {
+      if (!scanning) return;
+      try {
+        const [hit] = await det.detect($("video"));
+        if (hit) send(hit.rawValue);
+      } catch {}
+      requestAnimationFrame(loop);
+    };
+    loop();
+  } else if (window.ZXing) {
+    reader = new ZXing.BrowserMultiFormatReader();
+    reader.decodeFromVideoElement($("video"), r => { if (r) send(r.getText()); });
+  } else {
+    $("err").textContent = "ამ ბრაუზერში სკანერი არ არის — გახსენი Safari-ში ან Chrome-ში";
+  }
+}
+
+function stop() {
+  scanning = false;
+  reader?.reset(); reader = null;
+  stream?.getTracks().forEach(t => t.stop()); stream = null;
+  $("toggle").textContent = "სკანირების დაწყება";
+  $("toggle").classList.remove("stop");
+}
+
+$("toggle").onclick = () => (scanning ? stop() : start());
+document.addEventListener("visibilitychange", () => { if (document.hidden && scanning) stop(); });
+</script>
+</body>
+</html>
