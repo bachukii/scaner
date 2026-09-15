@@ -95,6 +95,7 @@
   <button id="toggle">სკანირების დაწყება</button>
 </footer>
 
+<script src="https://cdn.jsdelivr.net/npm/@undecaf/zbar-wasm@0.11.0/dist/inlined/index.js"></script>
 <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
 <script>
   window.zxingReady = window.ZXing ? Promise.resolve(true) : new Promise(res => {
@@ -202,65 +203,60 @@ async function start() {
   const log = t => { $("dbg").textContent += t + "\n"; };
   $("dbg").textContent = "";
 
-  let native = null;
-  if ("BarcodeDetector" in window) {
-    try {
-      const sup = await BarcodeDetector.getSupportedFormats();
-      log("BarcodeDetector: " + sup.join(", "));
-      if (sup.includes("code_39") || sup.includes("code_128")) {
-        native = new BarcodeDetector({
-          formats: sup.filter(f => ["code_128","code_39","ean_13","ean_8","upc_a","upc_e","itf","qr_code"].includes(f))
-        });
-      } else {
-        log("→ Code 39/128 არ უჭერს მხარს, ვიყენებ ZXing-ს");
-      }
-    } catch (e) { log("BarcodeDetector შეცდომა: " + e.message); }
-  } else {
-    log("BarcodeDetector: არ არსებობს");
-  }
+  $("video").srcObject = stream;
+  await $("video").play();
 
-  if (native) {
-    log("ძრავი: BarcodeDetector");
-    $("video").srcObject = stream;
-    await $("video").play();
-    let frames = 0, failed = 0;
-    const loop = async () => {
+  if (window.zbarWasm) { runZbar(); return; }
+  log("ZBar ვერ ჩაიტვირთა — ვიყენებ ZXing-ს");
+  runZxing();
+
+  /* ── ZBar: კადრის ცენტრალური ზოლი, სრული გარჩევადობით ── */
+  function runZbar() {
+    log("ძრავი: ZBar (WASM)");
+    const v = $("video");
+    const cv = document.createElement("canvas");
+    const cx = cv.getContext("2d", { willReadFrequently: true });
+    let tries = 0, busy = false;
+
+    const tick = async () => {
       if (!scanning) return;
-      try {
-        const hits = await native.detect($("video"));
-        if (hits.length) record(hits[0].rawValue);
-      } catch (e) {
-        if (++failed === 1) log("detect შეცდომა: " + e.message);
-        if (failed > 15) { log("→ გადავდივარ ZXing-ზე"); stop(); useZxing(); return; }
+      if (!busy && v.videoWidth) {
+        busy = true;
+        try {
+          const w = v.videoWidth, h = v.videoHeight;
+          const bandY = Math.round(h * 0.25), bandH = Math.round(h * 0.5);
+          if (cv.width !== w || cv.height !== bandH) { cv.width = w; cv.height = bandH; }
+          cx.drawImage(v, 0, bandY, w, bandH, 0, 0, w, bandH);
+          const img = cx.getImageData(0, 0, w, bandH);
+          const syms = await zbarWasm.scanImageData(img);
+          if (syms.length) {
+            const sym = syms[0];
+            const text = sym.decode ? sym.decode() : new TextDecoder().decode(new Uint8Array(sym.data));
+            log("წაკითხულია: " + sym.typeName);
+            record(text);
+          } else if (++tries % 25 === 0) {
+            log(`ვცდილობ... ${tries} (კადრი ${w}×${bandH})`);
+          }
+        } catch (e) {
+          log("ZBar შეცდომა: " + e.message);
+          scanning = false;
+        }
+        busy = false;
       }
-      if (++frames % 30 === 0) $("dbg").dataset.f = frames;
-      requestAnimationFrame(loop);
+      setTimeout(tick, 100);
     };
-    loop();
-    return;
+    tick();
   }
 
-  useZxing();
-
-  async function useZxing() {
-    const ok = await window.zxingReady;
-    log("ZXing: " + (ok ? "ჩაიტვირთა" : "ვერ ჩაიტვირთა"));
-    if (!ok) { $("msg").textContent = "სკანერის ბიბლიოთეკა ვერ ჩამოვიდა — ინტერნეტი შეამოწმე"; return; }
-
-    const hints = new Map();
-    const F = ZXing.BarcodeFormat;
+  /* ── ZXing: სათადარიგო ── */
+  function runZxing() {
+    if (!window.ZXing) { $("msg").textContent = "სკანერის ბიბლიოთეკა ვერ ჩამოვიდა"; return; }
+    const hints = new Map(), F = ZXing.BarcodeFormat;
     hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
-      F.CODE_128, F.CODE_39, F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.ITF, F.QR_CODE
-    ]);
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS,
+      [F.CODE_128, F.CODE_39, F.EAN_13, F.EAN_8, F.UPC_A, F.ITF, F.QR_CODE]);
     reader = new ZXing.BrowserMultiFormatReader(hints, 120);
-    scanning = true;
-    let tries = 0;
-    reader.decodeFromStream(stream, $("video"), (r, err) => {
-      if (r) { record(r.getText()); return; }
-      if (++tries % 40 === 0) log("ვცდილობ... კადრი " + tries);
-      if (err && err.name && err.name !== "NotFoundException" && tries < 3) log("ZXing: " + err.name);
-    }).then(() => log("ძრავი: ZXing გაშვებულია"))
+    reader.decodeFromStream(stream, $("video"), r => { if (r) record(r.getText()); })
       .catch(e => { $("msg").textContent = "ZXing ვერ გაეშვა: " + e.message; });
   }
 }
