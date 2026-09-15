@@ -52,6 +52,8 @@
   footer { display: flex; gap: 10px; padding: 12px; align-items: center; }
   button { flex: 1; padding: 16px; border: 0; border-radius: 12px; background: #b3261e; color: #fff; font: 600 17px/1 inherit; }
   button.stop { background: var(--panel); border: 1px solid var(--line); color: #eef1f6; }
+  #zoom { margin: 12px 12px 0; width: calc(100% - 24px); accent-color: #b3261e; }
+  button.icon { flex: 0 0 60px; background: var(--panel); border: 1px solid var(--line); font-size: 20px; }
   .msg { margin: 10px 12px 0; font-size: 14px; color: #ff8f8f; }
 
   .setup { margin: 12px; padding: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
@@ -84,14 +86,17 @@
   <button id="saveApi">შენახვა</button>
 </div>
 
+<input type="range" id="zoom" hidden>
+
 <footer>
+  <button id="torch" class="icon" hidden>🔦</button>
   <button id="toggle">სკანირების დაწყება</button>
 </footer>
 
 <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
 <script>
 /* ─── აქ ჩასვი შენი Apps Script მისამართი ─────────────────────── */
-let API = "";
+let API = "https://script.google.com/macros/s/AKfycbxw9Apfwpr5duSnJSSOg3uC932EA0MOUQasQB015Que7dfFdvuZ4OEbN53LTMcw7Igu/exec";
 /* ───────────────────────────────────────────────────────────────── */
 
 const $ = id => document.getElementById(id);
@@ -168,7 +173,11 @@ async function start() {
   $("msg").textContent = "";
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 } }
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 1920 }, height: { ideal: 1080 },
+        focusMode: "continuous"
+      }
     });
   } catch (e) {
     $("msg").textContent = "კამერა ვერ გაიხსნა: " + e.message;
@@ -177,6 +186,7 @@ async function start() {
   $("video").srcObject = stream;
   await $("video").play();
   scanning = true;
+  setupCamControls(stream.getVideoTracks()[0]);
   $("toggle").textContent = "გაჩერება";
   $("toggle").classList.add("stop");
 
@@ -191,10 +201,37 @@ async function start() {
     };
     loop();
   } else if (window.ZXing) {
-    reader = new ZXing.BrowserMultiFormatReader();
+    const hints = new Map();
+    const F = ZXing.BarcodeFormat;
+    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+      F.CODE_128, F.CODE_39, F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.ITF, F.QR_CODE
+    ]);
+    reader = new ZXing.BrowserMultiFormatReader(hints, 150);
     reader.decodeFromVideoElement($("video"), r => { if (r) record(r.getText()); });
   } else {
     $("msg").textContent = "ამ ბრაუზერში სკანერი არ მუშაობს — გახსენი Safari-ში ან Chrome-ში";
+  }
+}
+
+function setupCamControls(track) {
+  const caps = track.getCapabilities?.() || {};
+  if (caps.zoom) {
+    const z = $("zoom");
+    z.min = caps.zoom.min; z.max = Math.min(caps.zoom.max, caps.zoom.min + 4);
+    z.step = caps.zoom.step || 0.1; z.value = track.getSettings().zoom ?? caps.zoom.min;
+    z.hidden = false;
+    z.oninput = () => track.applyConstraints({ advanced: [{ zoom: Number(z.value) }] }).catch(() => {});
+  }
+  if (caps.torch) {
+    const t = $("torch");
+    t.hidden = false;
+    let on = false;
+    t.onclick = () => {
+      on = !on;
+      track.applyConstraints({ advanced: [{ torch: on }] }).catch(() => {});
+      t.classList.toggle("stop", on);
+    };
   }
 }
 
@@ -202,6 +239,7 @@ function stop() {
   scanning = false;
   reader?.reset(); reader = null;
   stream?.getTracks().forEach(t => t.stop()); stream = null;
+  $("zoom").hidden = true; $("torch").hidden = true;
   $("toggle").textContent = "სკანირების დაწყება";
   $("toggle").classList.remove("stop");
 }
