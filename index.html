@@ -263,6 +263,7 @@ async function start() {
     }).then(() => log("ძრავი: ZXing გაშვებულია"))
       .catch(e => { $("msg").textContent = "ZXing ვერ გაეშვა: " + e.message; });
   }
+}
 
 function setupCamControls(track) {
   const caps = track.getCapabilities?.() || {};
